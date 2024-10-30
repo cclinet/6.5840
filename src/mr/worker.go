@@ -49,13 +49,8 @@ out:
 			break out
 		}
 	}
-	// ReportTaskCompleteFunc(1, 1)
-	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
 }
+
 func RequestNewTaskFunc() RPCResponseArgs {
 	req := RequestArgs{
 		Type: RequestNewTask,

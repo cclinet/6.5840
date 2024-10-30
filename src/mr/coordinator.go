@@ -22,13 +22,11 @@ type Coordinator struct {
 	// Your definitions here.
 	mapTask                []MapTask
 	reduceTask             []ReduceTask
-	mapChan                chan int
-	reduceChan             chan int
-	mapTaskNum             int
-	reduceTaskNum          int
+	mapChan                chan int //需要执行的map任务taskID
+	reduceChan             chan int //需要执行的reduce任务taskID
 	completedMapTaskNum    int
 	completedReduceTaskNum int
-	reportChan             chan ReportTaskCompleteArgs
+	reportChan             chan ReportTaskCompleteArgs //完成任务的记录
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -40,19 +38,20 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
 }
+
 func (c *Coordinator) Call(req *RequestArgs, res *RPCResponseArgs) error {
 	// log.Printf("%v", req)
 	switch req.Type {
 	case RequestNewTask:
-		if c.completedReduceTaskNum == c.reduceTaskNum {
+		if c.completedReduceTaskNum == len(c.reduceTask) {
 			res.Type = Stop
 			return nil
 		}
-		if c.completedMapTaskNum == c.mapTaskNum {
+		if c.completedMapTaskNum == len(c.mapTask) {
 			select {
 			case taskID := <-c.reduceChan:
 				res.Type = Reduce
-				res.Reduce = ReduceArgs{TaskID: taskID, MapTaskNum: c.mapTaskNum}
+				res.Reduce = ReduceArgs{TaskID: taskID, MapTaskNum: len(c.mapTask)}
 				go func() {
 					time.AfterFunc(10*time.Second, func() {
 						if !c.reduceTask[taskID].completed {
@@ -70,7 +69,7 @@ func (c *Coordinator) Call(req *RequestArgs, res *RPCResponseArgs) error {
 		select {
 		case taskID := <-c.mapChan:
 			res.Type = Map
-			res.Map = MapArgs{TaskID: taskID, FileName: c.mapTask[taskID].filename, ReduceTaskNum: c.reduceTaskNum}
+			res.Map = MapArgs{TaskID: taskID, FileName: c.mapTask[taskID].filename, ReduceTaskNum: len(c.reduceTask)}
 			go func() {
 				time.AfterFunc(10*time.Second, func() {
 					if !c.mapTask[taskID].completed {
@@ -107,7 +106,7 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := (c.completedReduceTaskNum == c.reduceTaskNum)
+	ret := (c.completedReduceTaskNum == len(c.reduceTask))
 
 	time.Sleep(1 * time.Second)
 	// Your code here.
@@ -120,22 +119,26 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
-	c.reduceTaskNum = nReduce
-	c.reduceChan = make(chan int, c.reduceTaskNum)
+
+	// 初始化reduce任务
 	c.completedReduceTaskNum = 0
+	c.reduceChan = make(chan int, nReduce)
 	for i := range nReduce {
 		c.reduceTask = append(c.reduceTask, ReduceTask{partition: i, completed: false})
 		c.reduceChan <- i
 	}
-	c.mapTaskNum = len(files)
-	c.mapChan = make(chan int, c.mapTaskNum)
+
+	// 初始化map任务
 	c.completedMapTaskNum = 0
+	c.mapChan = make(chan int, len(files))
 	for i, file := range files {
 		c.mapTask = append(c.mapTask, MapTask{filename: file, completed: false})
 		c.mapChan <- i
 	}
+
 	c.reportChan = make(chan ReportTaskCompleteArgs)
 
+	//处理汇报事件
 	go func() {
 		for {
 			task := <-c.reportChan
