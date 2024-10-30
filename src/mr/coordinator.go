@@ -28,6 +28,7 @@ type Coordinator struct {
 	reduceTaskNum          int
 	completedMapTaskNum    int
 	completedReduceTaskNum int
+	reportChan             chan ReportTaskCompleteArgs
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -40,25 +41,34 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 func (c *Coordinator) Call(req *RequestArgs, res *RPCResponseArgs) error {
+	// log.Printf("%v", req)
 	switch req.Type {
 	case RequestNewTask:
 		if c.completedReduceTaskNum == c.reduceTaskNum {
 			res.Type = Stop
-			goto exit
+			return nil
 		}
 		if c.completedMapTaskNum == c.mapTaskNum {
-			taskID := <-c.reduceChan
-			res.Type = Reduce
-			res.Reduce = ReduceArgs{TaskID: taskID, MapTaskNum: c.mapTaskNum}
-			// reduce
-			goto exit
+			select {
+			case taskID := <-c.reduceChan:
+				res.Type = Reduce
+				res.Reduce = ReduceArgs{TaskID: taskID, MapTaskNum: c.mapTaskNum}
+				go func() {
+					time.AfterFunc(10*time.Second, func() {
+						if !c.reduceTask[taskID].completed {
+							c.reduceChan <- taskID
+						}
+					})
+				}()
+			default:
+				res.Type = Continue
+			}
+
+			return nil
 		}
-		if len(c.mapChan) == 0 {
-			res.Type = Continue
-			goto exit
-		}
-		{
-			taskID := <-c.mapChan
+
+		select {
+		case taskID := <-c.mapChan:
 			res.Type = Map
 			res.Map = MapArgs{TaskID: taskID, FileName: c.mapTask[taskID].filename, ReduceTaskNum: c.reduceTaskNum}
 			go func() {
@@ -68,21 +78,15 @@ func (c *Coordinator) Call(req *RequestArgs, res *RPCResponseArgs) error {
 					}
 				})
 			}()
-			goto exit
+		default:
+			res.Type = Continue
 		}
+		return nil
 	case ReportTaskComplete:
-		taskID := req.ReportTaskCompleteArgs.TaskID
-		switch req.ReportTaskCompleteArgs.TaskType {
-		case Map:
-			c.mapTask[taskID].completed = true
-			c.completedMapTaskNum += 1
-		case Reduce:
-			c.reduceTask[taskID].completed = true
-			c.completedReduceTaskNum += 1
-		}
+		c.reportChan <- req.ReportTaskCompleteArgs
 		res.Type = OK
 	}
-exit:
+
 	return nil
 }
 
@@ -105,6 +109,7 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	ret := (c.completedReduceTaskNum == c.reduceTaskNum)
 
+	time.Sleep(1 * time.Second)
 	// Your code here.
 
 	return ret
@@ -129,9 +134,28 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		c.mapTask = append(c.mapTask, MapTask{filename: file, completed: false})
 		c.mapChan <- i
 	}
+	c.reportChan = make(chan ReportTaskCompleteArgs)
 
-	// Your code here.
+	go func() {
+		for {
+			task := <-c.reportChan
+			// log.Printf("%v", task)
+			taskID := task.TaskID
+			switch task.TaskType {
+			case Map:
+				if !c.mapTask[taskID].completed {
+					c.mapTask[taskID].completed = true
+					c.completedMapTaskNum += 1
+				}
 
+			case Reduce:
+				if !c.reduceTask[taskID].completed {
+					c.reduceTask[taskID].completed = true
+					c.completedReduceTaskNum += 1
+				}
+			}
+		}
+	}()
 	c.server()
 	return &c
 }
